@@ -1,0 +1,59 @@
+
+[package]
+edition = "2018"
+name = "stake-cw20"
+version = "0.2.6"
+authors = ["Arnold <warnold233@gmail.com>"]
+description = "FanFury Liquidity Staking"
+license = "Apache-2.0"
+repository = "https://github.com/FanFury/liquidity-contracts"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+[dependencies.cosmwasm-std]
+version = "1.0.0-beta"
+
+[dependencies.cosmwasm-storage]
+version = "1.0.0-beta"
+
+[dependencies.cw-controllers]
+version = "0.11"
+
+[dependencies.cw-storage-plus]
+version = "0.11"
+
+[dependencies.cw-utils]
+version = "0.11"
+
+[dependencies.cw2]
+version = "0.11"
+
+[dependencies.cw20]
+version = "0.11"
+
+[dependencies.cw20-base]
+version = "0.11"
+features = ["library"]
+
+[dependencies.schemars]
+version = "0.8.8"
+
+[dependencies.serde]
+version = "1.0.132"
+features = ["derive"]
+default-features = false
+
+[dependencies.thiserror]
+version = "1.0.30"
+[dev-dependencies.anyhow]
+version = "1.0.51"
+
+[dev-dependencies.cosmwasm-schema]
+version = "1.0.0-beta"
+
+[dev-dependencies.cw-multi-test]
+version = "0.11"
+
+[features]
+backtraces = ["cosmwasm-std/backtraces"]
+library = []
