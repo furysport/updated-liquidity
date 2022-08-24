@@ -76,13 +76,15 @@ fn instantiate_cw20(app: &mut App, initial_balances: Vec<Cw20Coin>) -> Addr {
         .unwrap()
 }
 
-fn instantiate_staking(app: &mut App, cw20: Addr, unstaking_duration: Option<Duration>) -> Addr {
+fn instantiate_staking(app: &mut App, cw20: Addr, unstaking_duration: Option<Duration>, unstaking_price_rate: u64) -> Addr {
     let staking_code_id = app.store_code(contract_staking());
     let msg = crate::msg::InstantiateMsg {
         owner: Some("owner".to_string()),
         manager: Some("manager".to_string()),
         token_address: cw20.to_string(),
         unstaking_duration,
+        unstaking_price_rate
+
     };
     app.instantiate_contract(
         staking_code_id,
@@ -99,12 +101,13 @@ fn setup_test_case(
     app: &mut App,
     initial_balances: Vec<Cw20Coin>,
     unstaking_duration: Option<Duration>,
+    unstaking_price_rate: u64
 ) -> (Addr, Addr) {
     // Instantiate cw20 contract
     let cw20_addr = instantiate_cw20(app, initial_balances);
     app.update_block(next_block);
     // Instantiate staking contract
-    let staking_addr = instantiate_staking(app, cw20_addr.clone(), unstaking_duration);
+    let staking_addr = instantiate_staking(app, cw20_addr.clone(), unstaking_duration, unstaking_price_rate);
     app.update_block(next_block);
     (staking_addr, cw20_addr)
 }
@@ -222,7 +225,7 @@ fn test_instantiate_invalid_unstaking_duration() {
         amount: amount1,
     }];
     let (_staking_addr, _cw20_addr) =
-        setup_test_case(&mut app, initial_balances, Some(Duration::Height(0)));
+        setup_test_case(&mut app, initial_balances, Some(Duration::Height(0)), 100);
 }
 
 #[test]
@@ -236,7 +239,7 @@ fn test_update_config() {
         address: ADDR1.to_string(),
         amount: amount1,
     }];
-    let (staking_addr, _cw20_addr) = setup_test_case(&mut app, initial_balances, None);
+    let (staking_addr, _cw20_addr) = setup_test_case(&mut app, initial_balances, None, 100);
 
     let info = mock_info("owner", &[]);
     let _env = mock_env();
@@ -438,7 +441,7 @@ fn test_staking() {
         address: ADDR1.to_string(),
         amount: amount1,
     }];
-    let (staking_addr, cw20_addr) = setup_test_case(&mut app, initial_balances, None);
+    let (staking_addr, cw20_addr) = setup_test_case(&mut app, initial_balances, None, 100);
 
     let info = mock_info(ADDR1, &[]);
     let _env = mock_env();
@@ -549,6 +552,7 @@ fn text_max_claims() {
         &mut app,
         initial_balances,
         Some(Duration::Height(unstaking_blocks)),
+        100
     );
 
     let info = mock_info(ADDR1, &[]);
@@ -590,6 +594,7 @@ fn test_unstaking_with_claims() {
         &mut app,
         initial_balances,
         Some(Duration::Height(unstaking_blocks)),
+        100
     );
 
     let info = mock_info(ADDR1, &[]);
@@ -709,6 +714,7 @@ fn multiple_address_staking() {
         &mut app,
         initial_balances,
         Some(Duration::Height(unstaking_blocks)),
+        100
     );
 
     let info = mock_info(ADDR1, &[]);
@@ -758,7 +764,7 @@ fn test_auto_compounding_staking() {
         address: ADDR1.to_string(),
         amount: amount1,
     }];
-    let (staking_addr, cw20_addr) = setup_test_case(&mut app, initial_balances, None);
+    let (staking_addr, cw20_addr) = setup_test_case(&mut app, initial_balances, None, 100);
 
     let info = mock_info(ADDR1, &[]);
     let _env = mock_env();
@@ -934,7 +940,7 @@ fn test_simple_unstaking_with_duration() {
         },
     ];
     let (staking_addr, cw20_addr) =
-        setup_test_case(&mut app, initial_balances, Some(Duration::Height(1)));
+        setup_test_case(&mut app, initial_balances, Some(Duration::Height(1)), 100);
 
     // Bond Address 1
     let info = mock_info(ADDR1, &[]);
@@ -1016,6 +1022,7 @@ fn test_double_unstake_at_height() {
             amount: Uint128::new(10),
         }],
         None,
+        100
     );
 
     stake_tokens(
@@ -1110,6 +1117,7 @@ fn test_query_list_stakers() {
             },
         ],
         None,
+        100
     );
 
     stake_tokens(

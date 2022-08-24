@@ -19,7 +19,10 @@ pub const TOKEN2: Item<Token> = Item::new("token2");
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct Config {
-    pub burn_rate: u64,
+    pub owner: Addr,
+    pub staking_contract_address: Addr,
+    pub staking_token_address: Addr,
+    pub staking_funds_amount: Uint128
 }
 
 pub const CONFIG: Item<Config> = Item::new("config");

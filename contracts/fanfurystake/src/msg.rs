@@ -1,4 +1,4 @@
-use cosmwasm_std::Uint128;
+use cosmwasm_std::{Uint128, Addr};
 use cw20::Cw20ReceiveMsg;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,7 @@ pub struct InstantiateMsg {
     pub manager: Option<String>,
     pub token_address: String,
     pub unstaking_duration: Option<Duration>,
+    pub unstaking_price_rate: u64
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
@@ -36,7 +37,11 @@ pub enum ExecuteMsg {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReceiveMsg {
-    Stake {},
+    Stake {
+    },
+    LpStake {
+        address: Addr
+    },
     Fund {},
 }
 

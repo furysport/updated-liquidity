@@ -1,4 +1,4 @@
-use cosmwasm_std::{StdError, Uint128};
+use cosmwasm_std::{StdError, Uint128, Addr};
 use thiserror::Error;
 
 #[derive(Error, Debug, PartialEq)]
@@ -64,6 +64,9 @@ pub enum ContractError {
     #[error("Failed to instantiate lp token")]
     InstantiateLpTokenError {},
 
+
+    #[error("Invalid token")]
+    InvalidToken { received: Addr, expected: Addr },
     
 
 }

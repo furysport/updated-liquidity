@@ -1,6 +1,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-
+use cw20::Cw20ReceiveMsg;
 use cosmwasm_std::{Addr, Uint128};
 
 use cw20::{Denom, Expiration};
@@ -9,7 +9,22 @@ use cw20::{Denom, Expiration};
 pub struct InstantiateMsg {
     pub token1_denom: Denom,
     pub token2_denom: Denom,
-    pub lp_token_code_id: u64
+    pub lp_token_code_id: u64,
+    pub owner: Addr,
+    pub staking_contract_address: Addr,
+    pub staking_token_address: Addr
+}
+
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StakeReceiveMsg {
+    Stake {
+    },
+    LpStake {
+        address: Addr
+    },
+    Fund {},
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
@@ -17,10 +32,20 @@ pub enum TokenSelect {
     Token1,
     Token2,
 }
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiveMsg {
+    Fund {},
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecuteMsg {
+    UpdateConfig {
+        owner: Addr,
+        staking_address: Addr
+    },
+    Receive(Cw20ReceiveMsg),
     AddLiquidity {
         token1_amount: Uint128,
         min_liquidity: Uint128,

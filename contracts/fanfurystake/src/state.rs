@@ -13,6 +13,7 @@ pub struct Config {
     pub manager: Option<Addr>,
     pub token_address: Addr,
     pub unstaking_duration: Option<Duration>,
+    pub unstaking_price_rate: u64
 }
 
 pub const CONFIG: Item<Config> = Item::new("config");

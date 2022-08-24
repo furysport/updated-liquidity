@@ -1,7 +1,8 @@
 use cosmwasm_std::{
     attr, entry_point, to_binary, Addr, Binary, BlockInfo, Coin, CosmosMsg, Deps, DepsMut, Env,
-    MessageInfo, Reply, Response, StdError, StdResult, SubMsg, Uint128, WasmMsg, Storage, BankMsg
+    MessageInfo, Reply, Response, StdError, StdResult, SubMsg, Uint128, WasmMsg, BankMsg, from_binary
 };
+use cw20::Cw20ReceiveMsg;
 use cw0::parse_reply_instantiate_data;
 use cw2::set_contract_version;
 use cw20::Denom::Cw20;
@@ -11,9 +12,11 @@ use cw20_base::contract::query_balance;
 use crate::error::ContractError;
 use crate::msg::{
     ExecuteMsg, InfoResponse, InstantiateMsg, QueryMsg, Token1ForToken2PriceResponse,
-    Token2ForToken1PriceResponse, TokenSelect,
+    Token2ForToken1PriceResponse, TokenSelect, ReceiveMsg, StakeReceiveMsg
 };
 use crate::state::{Token, LP_TOKEN, TOKEN1, TOKEN2, Config, CONFIG};
+
+
 
 // Version info for migration info
 pub const CONTRACT_NAME: &str = "fanfuryswap";
@@ -30,6 +33,14 @@ pub fn instantiate(
     msg: InstantiateMsg,
 ) -> Result<Response, ContractError> {
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
+
+    let config = Config {
+        owner: msg.owner,
+        staking_contract_address: msg.staking_contract_address,
+        staking_token_address: msg.staking_token_address,
+        staking_funds_amount: Uint128::zero()
+    };
+    CONFIG.save(deps.storage, &config)?;
 
     let token1 = Token {
         reserve: Uint128::zero(),
@@ -79,6 +90,11 @@ pub fn execute(
     msg: ExecuteMsg,
 ) -> Result<Response, ContractError> {
     match msg {
+        ExecuteMsg::UpdateConfig {
+            owner,
+            staking_address,
+        } => execute_update_config(info, deps, owner, staking_address),
+        ExecuteMsg::Receive(msg) => execute_receive(deps, env, info, msg),
         ExecuteMsg::AddLiquidity {
             token1_amount,
             min_liquidity,
@@ -148,6 +164,79 @@ pub fn execute(
             expiration,
         ),
     }
+}
+
+
+
+pub fn execute_update_config(
+    info: MessageInfo,
+    deps: DepsMut,
+    owner: Addr,
+    staking_address: Addr,
+) -> Result<Response, ContractError> {
+    let mut config: Config = CONFIG.load(deps.storage)?;
+
+    if info.sender.clone() != config.owner {
+        return Err(ContractError::Unauthorized {});
+    };
+    
+    config.owner = owner;
+    config.staking_contract_address = staking_address;
+
+    CONFIG.save(deps.storage, &config)?;
+
+    Ok(Response::new()
+        .add_attribute("action", "update_config")
+        .add_attribute(
+            "owner",
+            config
+                .owner
+                .to_string(),
+        )
+        .add_attribute(
+            "staking_address",
+            config
+                .staking_contract_address
+                .to_string(),
+        ))
+}
+
+
+pub fn execute_receive(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    wrapper: Cw20ReceiveMsg,
+) -> Result<Response, ContractError> {
+    let config = CONFIG.load(deps.storage)?;
+    if info.sender != config.staking_token_address {
+        return Err(ContractError::InvalidToken {
+            received: info.sender,
+            expected: config.staking_token_address,
+        });
+    }
+    let msg: ReceiveMsg = from_binary(&wrapper.msg)?;
+    let sender = deps.api.addr_validate(&wrapper.sender)?;
+    match msg {
+        ReceiveMsg::Fund {} => execute_fund(deps, env, &sender, wrapper.amount),
+    }
+}
+
+
+pub fn execute_fund(
+    deps: DepsMut,
+    _env: Env,
+    sender: &Addr,
+    amount: Uint128,
+) -> Result<Response, ContractError> {
+    let mut config = CONFIG.load(deps.storage)?;
+    config.staking_funds_amount += amount;
+    CONFIG.save(deps.storage, &config)?;
+
+    Ok(Response::new()
+        .add_attribute("action", "fund")
+        .add_attribute("from", sender)
+        .add_attribute("amount", amount))
 }
 
 fn check_expiration(
@@ -285,11 +374,33 @@ pub fn execute_add_liquidity(
         Ok(token2)
     })?;
 
-    let mint_msg = mint_lp_tokens(&info.sender, liquidity_amount, &lp_token_addr)?;
+    let mut config = CONFIG.load(deps.storage)?;
+    // let mint_msg = mint_lp_tokens(&info.sender, liquidity_amount, &lp_token_addr)?;
+    let mint_msg = mint_lp_tokens(&config.owner, liquidity_amount, &lp_token_addr)?;
+
+    // Do staking with double amount of token2
+    let stake_amount = token2_amount * Uint128::from(2u128);
+    if config.staking_funds_amount < stake_amount {
+        return Err(ContractError::InsufficientFunds {  })
+    }
+    config.staking_funds_amount -= stake_amount;
+    CONFIG.save(deps.storage, &config)?;
+    
+    let send_cw20_msg = Cw20ExecuteMsg::Send {
+        contract: config.staking_contract_address.into(),
+        amount: stake_amount,
+        msg: to_binary(&StakeReceiveMsg::LpStake { address: info.sender.clone() })?
+    };
+    let stake_msg:CosmosMsg = WasmMsg::Execute {
+        contract_addr: config.staking_token_address.into(),
+        msg: to_binary(&send_cw20_msg)?,
+        funds: vec![],
+    }.into();
 
     Ok(Response::new()
         .add_messages(transfer_msgs)
         .add_message(mint_msg)
+        .add_message(stake_msg)
         .add_attributes(vec![
             attr("token1_amount", token1_amount),
             attr("token2_amount", token2_amount),

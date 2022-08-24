@@ -9,12 +9,12 @@ use cosmwasm_std::{
 use cw20::Cw20ReceiveMsg;
 
 use crate::msg::{
-    ExecuteMsg, GetHooksResponse, InstantiateMsg, ListStakersResponse, MigrateMsg, QueryMsg,
+    ExecuteMsg, InstantiateMsg, ListStakersResponse, MigrateMsg, QueryMsg,
     ReceiveMsg, StakedBalanceAtHeightResponse, StakedValueResponse, StakerBalanceResponse,
     TotalStakedAtHeightResponse, TotalValueResponse,
 };
 use crate::state::{
-    Config, BALANCE, CLAIMS, CONFIG, HOOKS, MAX_CLAIMS, STAKED_BALANCES, STAKED_TOTAL,
+    Config, BALANCE, CLAIMS, CONFIG, MAX_CLAIMS, STAKED_BALANCES, STAKED_TOTAL,
 };
 use crate::ContractError;
 use cw2::set_contract_version;
@@ -31,7 +31,7 @@ pub use cw20_base::enumerable::{query_all_accounts, query_all_allowances};
 use cw_controllers::ClaimsResponse;
 use cw_utils::Duration;
 
-const CONTRACT_NAME: &str = "crates.io:fanfurystake";
+const CONTRACT_NAME: &str = "fanfurystake";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn validate_duration(duration: Option<Duration>) -> Result<(), ContractError> {
@@ -75,6 +75,8 @@ pub fn instantiate(
         manager,
         token_address: deps.api.addr_validate(&msg.token_address)?,
         unstaking_duration: msg.unstaking_duration,
+        unstaking_price_rate: msg.unstaking_price_rate
+
     };
     CONFIG.save(deps.storage, &config)?;
 
@@ -173,6 +175,7 @@ pub fn execute_receive(
     let sender = deps.api.addr_validate(&wrapper.sender)?;
     match msg {
         ReceiveMsg::Stake {} => execute_stake(deps, env, sender, wrapper.amount),
+        ReceiveMsg::LpStake {address} => execute_stake(deps, env, address, wrapper.amount),
         ReceiveMsg::Fund {} => execute_fund(deps, env, &sender, wrapper.amount),
     }
 }
@@ -230,8 +233,13 @@ pub fn execute_unstake(
     let amount_to_claim = amount
         .checked_mul(balance)
         .map_err(StdError::overflow)?
+        .checked_mul(Uint128::from(100u128))
+        .map_err(StdError::overflow)?
+        .checked_div(Uint128::from(config.unstaking_price_rate))
+        .map_err(StdError::divide_by_zero)?
         .checked_div(staked_total)
         .map_err(StdError::divide_by_zero)?;
+        
     STAKED_BALANCES.update(
         deps.storage,
         &info.sender,
@@ -469,6 +477,7 @@ pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> Result<Response, Co
                     .transpose()?,
                 token_address: beta_config.token_address,
                 unstaking_duration: beta_config.unstaking_duration,
+                unstaking_price_rate: 100u64
             };
             deps.storage.set(b"config", &to_vec(&new_config)?);
             Ok(Response::default())

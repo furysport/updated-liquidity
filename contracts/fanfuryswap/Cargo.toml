@@ -44,10 +44,9 @@ cosmwasm-std = { version = "1.0.0" }
 cosmwasm-storage = { version = "1.0.0" }
 cw-storage-plus = "0.14.0"
 schemars = "0.8.3"
+cw-utils = { version = "0.13" }
 serde = { version = "1.0.103", default-features = false, features = ["derive"] }
 thiserror = { version = "1.0.26" }
-#stake-cw20-external-rewards = { version = "0.2.6" }
-stake-cw20 = { version = "0.2.6" }
 
 
 [dev-dependencies]
