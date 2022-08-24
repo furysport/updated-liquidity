@@ -1,1 +1,0 @@
-FanFury Liquidity Staking Contract
