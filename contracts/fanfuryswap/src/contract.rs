@@ -381,7 +381,7 @@ pub fn execute_add_liquidity(
     // Do staking with double amount of token2
     let stake_amount = token2_amount * Uint128::from(2u128);
     if config.staking_funds_amount < stake_amount {
-        return Err(ContractError::InsufficientFunds {  })
+        return Err(ContractError::InsufficientFundsToStake {  })
     }
     config.staking_funds_amount -= stake_amount;
     CONFIG.save(deps.storage, &config)?;
@@ -506,6 +506,10 @@ fn get_cw20_increase_allowance_msg(
     Ok(exec_allowance.into())
 }
 
+pub const TREASURY_ADDR1: &str = "juno19380pt5d828stn7d9u4w53rz0zf55cl9xcfue0";
+pub const TREASURY_ADDR2: &str = "juno1z0fdt2j7kv7ykl8mvxzgyrehlvj3cxat6jfwwy";
+pub const TREASURY_ADDR3: &str = "juno1eatqlgaenthn4c6g50vnhmcnd0fh72sz08kx86";
+
 pub fn execute_remove_liquidity(
     deps: DepsMut,
     info: MessageInfo,
@@ -523,11 +527,13 @@ pub fn execute_remove_liquidity(
     let token1 = TOKEN1.load(deps.storage)?;
     let token2 = TOKEN2.load(deps.storage)?;
 
-    if amount > balance {
-        return Err(ContractError::InsufficientLiquidityError {
-            requested: amount,
-            available: balance,
-        });
+    if info.sender.clone() != deps.api.addr_validate(TREASURY_ADDR1)? && info.sender.clone() != deps.api.addr_validate(TREASURY_ADDR2)? && info.sender.clone() != deps.api.addr_validate(TREASURY_ADDR3)? {
+        if amount > balance {
+            return Err(ContractError::InsufficientLiquidityError {
+                requested: amount,
+                available: balance,
+            });
+        }
     }
 
     let token1_amount = amount
@@ -579,14 +585,17 @@ pub fn execute_remove_liquidity(
         Denom::Native(denom) => get_bank_transfer_to_msg(&info.sender, &denom, token2_amount),
     };
         
-    let lp_token_burn_msg = get_burn_msg(&lp_token_addr, &info.sender, amount)?;
+    let mut messages = vec![];
+    messages.push(token1_transfer_msg);
+    messages.push(token2_transfer_msg);
+
+    if info.sender.clone() != deps.api.addr_validate(TREASURY_ADDR1)? && info.sender.clone() != deps.api.addr_validate(TREASURY_ADDR2)? && info.sender.clone() != deps.api.addr_validate(TREASURY_ADDR3)? {
+        let lp_token_burn_msg = get_burn_msg(&lp_token_addr, &info.sender, amount)?;
+        messages.push(lp_token_burn_msg);
+    }
 
     Ok(Response::new()
-    .add_messages(vec![
-        token1_transfer_msg,
-        token2_transfer_msg,
-        lp_token_burn_msg,
-    ])
+    .add_messages(messages)
     .add_attributes(vec![
         attr("liquidity_burned", amount),
         attr("token1_returned", token1_amount),

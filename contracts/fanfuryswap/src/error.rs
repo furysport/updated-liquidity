@@ -69,4 +69,6 @@ pub enum ContractError {
     InvalidToken { received: Addr, expected: Addr },
     
 
+    #[error("InsufficientFundsToStake")]
+    InsufficientFundsToStake {},
 }
