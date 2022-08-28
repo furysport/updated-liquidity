@@ -1,6 +1,6 @@
 use cosmwasm_std::{
     attr, entry_point, to_binary, Addr, Binary, BlockInfo, Coin, CosmosMsg, Deps, DepsMut, Env,
-    MessageInfo, Reply, Response, StdError, StdResult, SubMsg, Uint128, WasmMsg, BankMsg, from_binary
+    MessageInfo, Reply, Response, StdError, StdResult, SubMsg, Uint128, WasmMsg, BankMsg, from_binary, ReplyOn
 };
 use cw20::Cw20ReceiveMsg;
 use cw0::parse_reply_instantiate_data;
@@ -12,17 +12,21 @@ use cw20_base::contract::query_balance;
 use crate::error::ContractError;
 use crate::msg::{
     ExecuteMsg, InfoResponse, InstantiateMsg, QueryMsg, Token1ForToken2PriceResponse,
-    Token2ForToken1PriceResponse, TokenSelect, ReceiveMsg, StakeReceiveMsg
+    Token2ForToken1PriceResponse, TokenSelect, StakeReceiveMsg
 };
 use crate::state::{Token, LP_TOKEN, TOKEN1, TOKEN2, Config, CONFIG};
-
-
+use crate::util::{NORMAL_DECIMAL, THOUSAND};
+use crate::util;
 
 // Version info for migration info
 pub const CONTRACT_NAME: &str = "fanfuryswap";
 pub const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const INSTANTIATE_LP_TOKEN_REPLY_ID: u64 = 0;
+const INSTANTIATE_BONDING_ID:u64 = 1;
+use fanfurybonding::msg::{InstantiateMsg as BondingInstantiateMsg, ExecuteMsg as BondingExecuteMsg};
+
+
 // Note, you can use StdResult in some functions where you do not
 // make use of the custom errors
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -35,22 +39,28 @@ pub fn instantiate(
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
 
     let config = Config {
-        owner: msg.owner,
-        staking_contract_address: msg.staking_contract_address,
-        staking_token_address: msg.staking_token_address,
-        staking_funds_amount: Uint128::zero()
+        owner: msg.owner.clone(),
+        bonding_code_id: msg.bonding_code_id,
+        bonding_contract_address: msg.owner.clone(),
+        fury_token_address: msg.fury_token_address.clone(),
+        treasury_address: msg.treasury_address,
+        usdc_denom: msg.usdc_denom.clone(),
+        tx_fee: msg.tx_fee,
+        platform_fee: msg.platform_fee,
+        lock_days: msg.lock_days,
+        discount: msg.discount
     };
     CONFIG.save(deps.storage, &config)?;
 
     let token1 = Token {
         reserve: Uint128::zero(),
-        denom: msg.token1_denom.clone(),
+        denom: Denom::Native(msg.usdc_denom.clone()),
     };
 
     TOKEN1.save(deps.storage, &token1)?;
 
     let token2 = Token {
-        denom: msg.token2_denom.clone(),
+        denom: Denom::Cw20(msg.fury_token_address),
         reserve: Uint128::zero(),
     };
 
@@ -92,9 +102,9 @@ pub fn execute(
     match msg {
         ExecuteMsg::UpdateConfig {
             owner,
-            staking_address,
-        } => execute_update_config(info, deps, owner, staking_address),
-        ExecuteMsg::Receive(msg) => execute_receive(deps, env, info, msg),
+            bonding_contract_address,
+            treasury_address
+        } => execute_update_config(info, deps, owner, bonding_contract_address, treasury_address),
         ExecuteMsg::AddLiquidity {
             token1_amount,
             min_liquidity,
@@ -172,7 +182,8 @@ pub fn execute_update_config(
     info: MessageInfo,
     deps: DepsMut,
     owner: Addr,
-    staking_address: Addr,
+    bonding_contract_address: Addr,
+    treasury_address: Addr
 ) -> Result<Response, ContractError> {
     let mut config: Config = CONFIG.load(deps.storage)?;
 
@@ -181,7 +192,8 @@ pub fn execute_update_config(
     };
     
     config.owner = owner;
-    config.staking_contract_address = staking_address;
+    config.bonding_contract_address = bonding_contract_address;
+    config.treasury_address = treasury_address;
 
     CONFIG.save(deps.storage, &config)?;
 
@@ -196,47 +208,9 @@ pub fn execute_update_config(
         .add_attribute(
             "staking_address",
             config
-                .staking_contract_address
+                .bonding_code_id
                 .to_string(),
         ))
-}
-
-
-pub fn execute_receive(
-    deps: DepsMut,
-    env: Env,
-    info: MessageInfo,
-    wrapper: Cw20ReceiveMsg,
-) -> Result<Response, ContractError> {
-    let config = CONFIG.load(deps.storage)?;
-    if info.sender != config.staking_token_address {
-        return Err(ContractError::InvalidToken {
-            received: info.sender,
-            expected: config.staking_token_address,
-        });
-    }
-    let msg: ReceiveMsg = from_binary(&wrapper.msg)?;
-    let sender = deps.api.addr_validate(&wrapper.sender)?;
-    match msg {
-        ReceiveMsg::Fund {} => execute_fund(deps, env, &sender, wrapper.amount),
-    }
-}
-
-
-pub fn execute_fund(
-    deps: DepsMut,
-    _env: Env,
-    sender: &Addr,
-    amount: Uint128,
-) -> Result<Response, ContractError> {
-    let mut config = CONFIG.load(deps.storage)?;
-    config.staking_funds_amount += amount;
-    CONFIG.save(deps.storage, &config)?;
-
-    Ok(Response::new()
-        .add_attribute("action", "fund")
-        .add_attribute("from", sender)
-        .add_attribute("amount", amount))
 }
 
 fn check_expiration(
@@ -337,7 +311,7 @@ pub fn execute_add_liquidity(
 
     // Generate cw20 transfer messages if necessary
     let mut transfer_msgs: Vec<CosmosMsg> = vec![];
-    if let Cw20(addr) = token1.denom {
+    if let Cw20(addr) = token1.denom.clone() {
         transfer_msgs.push(get_cw20_transfer_from_msg(
             &info.sender,
             &env.contract.address,
@@ -355,7 +329,7 @@ pub fn execute_add_liquidity(
     }
 
     // Refund token 2 if is a native token and not all is spent
-    if let Denom::Native(denom) = token2.denom {
+    if let Denom::Native(denom) = token2.denom.clone() {
         if token2_amount < max_token2 {
             transfer_msgs.push(get_bank_transfer_to_msg(
                 &info.sender,
@@ -378,29 +352,45 @@ pub fn execute_add_liquidity(
     // let mint_msg = mint_lp_tokens(&info.sender, liquidity_amount, &lp_token_addr)?;
     let mint_msg = mint_lp_tokens(&config.owner, liquidity_amount, &lp_token_addr)?;
 
-    // Do staking with double amount of token2
-    let stake_amount = token2_amount * Uint128::from(2u128);
-    if config.staking_funds_amount < stake_amount {
-        return Err(ContractError::InsufficientFundsToStake {  })
-    }
-    config.staking_funds_amount -= stake_amount;
-    CONFIG.save(deps.storage, &config)?;
+    ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    /// Bonding Part
     
-    let send_cw20_msg = Cw20ExecuteMsg::Send {
-        contract: config.staking_contract_address.into(),
-        amount: stake_amount,
-        msg: to_binary(&StakeReceiveMsg::LpStake { address: info.sender.clone() })?
-    };
-    let stake_msg:CosmosMsg = WasmMsg::Execute {
-        contract_addr: config.staking_token_address.into(),
-        msg: to_binary(&send_cw20_msg)?,
+    // Do staking with double amount of token2
+    let mut bond_mges:Vec<CosmosMsg> = vec![];
+    let bond_amount = token2_amount * Uint128::from(2u128) * Uint128::from(THOUSAND - config.platform_fee - config.tx_fee) / Uint128::from(THOUSAND);
+    // transaction fee(0.3%) is already taken in pool contract, so just send 1% fee to the treasury
+    // send 1% fury and usdc to treasury
+    let fee_token1 = token1_amount * Uint128::from(config.platform_fee + config.tx_fee) / Uint128::from(THOUSAND);
+    let fee_token2 = token2_amount * Uint128::from(config.platform_fee + config.tx_fee) / Uint128::from(THOUSAND);
+
+    bond_mges.push(util::transfer_token_message(token1.clone().denom.clone(), fee_token1, config.treasury_address.clone())?);
+    bond_mges.push(util::transfer_token_message(token2.clone().denom.clone(), fee_token2, config.treasury_address.clone())?);
+
+    TOKEN1.update(deps.storage, |mut token1| -> Result<_, ContractError> {
+        token1.reserve -= fee_token1;
+        Ok(token1)
+    })?;
+    TOKEN2.update(deps.storage, |mut token2| -> Result<_, ContractError> {
+        token2.reserve -= fee_token2;
+        Ok(token2)
+    })?;
+    
+    // make bonding
+    let bond_msg = BondingExecuteMsg::LpBond { address: info.sender.clone(), amount: bond_amount };
+    
+    let bond_execute_msg:CosmosMsg = WasmMsg::Execute {
+        contract_addr: config.bonding_contract_address.into(),
+        msg: to_binary(&bond_msg)?,
         funds: vec![],
     }.into();
 
     Ok(Response::new()
         .add_messages(transfer_msgs)
         .add_message(mint_msg)
-        .add_message(stake_msg)
+        .add_messages(bond_mges)
         .add_attributes(vec![
             attr("token1_amount", token1_amount),
             attr("token2_amount", token2_amount),
@@ -506,10 +496,6 @@ fn get_cw20_increase_allowance_msg(
     Ok(exec_allowance.into())
 }
 
-pub const TREASURY_ADDR1: &str = "juno19380pt5d828stn7d9u4w53rz0zf55cl9xcfue0";
-pub const TREASURY_ADDR2: &str = "juno1z0fdt2j7kv7ykl8mvxzgyrehlvj3cxat6jfwwy";
-pub const TREASURY_ADDR3: &str = "juno1eatqlgaenthn4c6g50vnhmcnd0fh72sz08kx86";
-
 pub fn execute_remove_liquidity(
     deps: DepsMut,
     info: MessageInfo,
@@ -527,13 +513,11 @@ pub fn execute_remove_liquidity(
     let token1 = TOKEN1.load(deps.storage)?;
     let token2 = TOKEN2.load(deps.storage)?;
 
-    if info.sender.clone() != deps.api.addr_validate(TREASURY_ADDR1)? && info.sender.clone() != deps.api.addr_validate(TREASURY_ADDR2)? && info.sender.clone() != deps.api.addr_validate(TREASURY_ADDR3)? {
-        if amount > balance {
-            return Err(ContractError::InsufficientLiquidityError {
-                requested: amount,
-                available: balance,
-            });
-        }
+    if amount > balance {
+        return Err(ContractError::InsufficientLiquidityError {
+            requested: amount,
+            available: balance,
+        });
     }
 
     let token1_amount = amount
@@ -589,10 +573,8 @@ pub fn execute_remove_liquidity(
     messages.push(token1_transfer_msg);
     messages.push(token2_transfer_msg);
 
-    if info.sender.clone() != deps.api.addr_validate(TREASURY_ADDR1)? && info.sender.clone() != deps.api.addr_validate(TREASURY_ADDR2)? && info.sender.clone() != deps.api.addr_validate(TREASURY_ADDR3)? {
-        let lp_token_burn_msg = get_burn_msg(&lp_token_addr, &info.sender, amount)?;
-        messages.push(lp_token_burn_msg);
-    }
+    let lp_token_burn_msg = get_burn_msg(&lp_token_addr, &info.sender, amount)?;
+    messages.push(lp_token_burn_msg);
 
     Ok(Response::new()
     .add_messages(messages)
@@ -923,20 +905,61 @@ pub fn query_token2_for_token1_price(
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
-pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractError> {
+pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractError> {
     if msg.id != INSTANTIATE_LP_TOKEN_REPLY_ID {
         return Err(ContractError::UnknownReplyId { id: msg.id });
     };
-    let res = parse_reply_instantiate_data(msg);
+    let res = parse_reply_instantiate_data(msg.clone());
     match res {
         Ok(res) => {
-            // Validate contract address
-            let cw20_addr = deps.api.addr_validate(&res.contract_address)?;
+            if msg.id == INSTANTIATE_LP_TOKEN_REPLY_ID {
+                // Validate contract address
+                let cw20_addr = deps.api.addr_validate(&res.contract_address)?;
 
-            // Save gov token
-            LP_TOKEN.save(deps.storage, &cw20_addr)?;
+                // Save gov token
+                LP_TOKEN.save(deps.storage, &cw20_addr)?;
 
-            Ok(Response::new())
+                //Instantiate bonding contract
+
+                let cfg = CONFIG.load(deps.storage)?;
+                let mut sub_msg: Vec<SubMsg> = vec![];
+
+                sub_msg.push(SubMsg {
+                    msg: WasmMsg::Instantiate {
+                        code_id: cfg.bonding_code_id,
+                        funds: vec![],
+                        admin: Some(cfg.owner.clone().into()),
+                        label: String::from("USDC<->Fury Pool LP Bonding"),
+                        msg: to_binary(&BondingInstantiateMsg {
+                            owner: cfg.owner.clone(),
+                            pool_address: env.contract.address.clone(),
+                            treasury_address: cfg.treasury_address.clone(),
+                            fury_token_address: cfg.fury_token_address.clone(),
+                            lock_days: cfg.lock_days,
+                            discount: cfg.discount,
+                            usdc_denom: cfg.usdc_denom,
+                            is_native_bonding: false,
+                            tx_fee: cfg.tx_fee,
+                            platform_fee: cfg.platform_fee
+                        })?,
+                    }.into(),
+                    id: INSTANTIATE_BONDING_ID,
+                    gas_limit: None,
+                    reply_on: ReplyOn::Success,
+                });
+
+                Ok(Response::new().add_submessages(sub_msg))
+            } else if msg.id == INSTANTIATE_BONDING_ID {
+                let bonding_addr = deps.api.addr_validate(&res.contract_address)?;
+                let mut cfg = CONFIG.load(deps.storage)?;
+                cfg.bonding_contract_address = bonding_addr;
+                // Save gov token
+                CONFIG.save(deps.storage, &cfg)?;
+                Ok(Response::new())
+            } else {
+                Ok(Response::new())
+            }
+            
         }
         Err(_) => Err(ContractError::InstantiateLpTokenError {}),
     }

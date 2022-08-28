@@ -71,4 +71,16 @@ pub enum ContractError {
 
     #[error("InsufficientFundsToStake")]
     InsufficientFundsToStake {},
+
+    #[error("Amount of the native coin inputed is zero")]
+    NativeInputZero {},
+
+    #[error("Amount of the cw20 coin inputed is zero")]
+    Cw20InputZero {},
+
+    #[error("Token type mismatch")]
+    TokenTypeMismatch {},
+
+    #[error("Disabled")]
+    Disabled {},
 }
