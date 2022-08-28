@@ -58,6 +58,9 @@ pub enum ContractError {
     #[error("InsufficientFunds")]
     InsufficientFunds {},
 
+    #[error("InsufficientFee")]
+    InsufficientFee {},
+
     #[error("Uknown reply id: {id}")]
     UnknownReplyId { id: u64 },
 

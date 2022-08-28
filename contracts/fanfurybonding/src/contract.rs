@@ -285,9 +285,6 @@ pub fn execute_unbond(
         return Err(ContractError::StillInBonding {})
     }
 
-    let real_unbond_amount = record.amount * Uint128::from(THOUSAND - cfg.platform_fee) / Uint128::from(THOUSAND);
-    let fee_amount = record.amount - real_unbond_amount;
-
     let balance = Balance::from(info.funds);
 
     //calculate tx fee
@@ -299,7 +296,7 @@ pub fn execute_unbond(
         })?,
     }))?;
 
-    if usdc_amount < token1_price_response.token1_amount * Uint128::from(cfg.tx_fee) / Uint128::from(THOUSAND) {
+    if usdc_amount < token1_price_response.token1_amount * Uint128::from(cfg.platform_fee + cfg.tx_fee) / Uint128::from(THOUSAND) {
         return Err(ContractError::InsufficientFee { })
     }
 
@@ -311,6 +308,7 @@ pub fn execute_unbond(
     let mut messages:Vec<CosmosMsg> = vec![];
     messages.push(util::transfer_token_message(Denom::Cw20(cfg.fury_token_address.clone()), record.amount, info.sender.clone())?);
     messages.push(util::transfer_token_message(Denom::Native(cfg.usdc_denom.clone()), usdc_amount, cfg.treasury_address.clone())?);
+    
     let mut list = BONDING.load(deps.storage, info.sender.clone())?;
     list.remove(index as usize);
     BONDING.save(deps.storage, info.sender.clone(), &list)?;

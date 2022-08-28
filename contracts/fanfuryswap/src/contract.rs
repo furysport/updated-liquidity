@@ -109,6 +109,7 @@ pub fn execute(
             token1_amount,
             min_liquidity,
             max_token2,
+            fee_amount,
             expiration,
         } => execute_add_liquidity(
             deps,
@@ -117,6 +118,7 @@ pub fn execute(
             min_liquidity,
             token1_amount,
             max_token2,
+            fee_amount,
             expiration,
         ),
         ExecuteMsg::RemoveLiquidity {
@@ -129,6 +131,7 @@ pub fn execute(
             input_token,
             input_amount,
             min_output,
+            fee_amount,
             expiration,
             ..
         } => execute_swap(
@@ -139,40 +142,10 @@ pub fn execute(
             input_token,
             &info.sender,
             min_output,
+            fee_amount,
             expiration,
-        ),
-        ExecuteMsg::PassThroughSwap {
-            output_amm_address,
-            input_token,
-            input_token_amount,
-            output_min_token,
-            expiration,
-        } => execute_pass_through_swap(
-            deps,
-            info,
-            env,
-            output_amm_address,
-            input_token,
-            input_token_amount,
-            output_min_token,
-            expiration,
-        ),
-        ExecuteMsg::SwapAndSendTo {
-            input_token,
-            input_amount,
-            recipient,
-            min_token,
-            expiration,
-        } => execute_swap(
-            deps,
-            &info,
-            input_amount,
-            env,
-            input_token,
-            &recipient,
-            min_token,
-            expiration,
-        ),
+        )
+        
     }
 }
 
@@ -271,6 +244,7 @@ pub fn execute_add_liquidity(
     min_liquidity: Uint128,
     token1_amount: Uint128,
     max_token2: Uint128,
+    fee_amount: Uint128,
     expiration: Option<Expiration>,
 ) -> Result<Response, ContractError> {
     check_expiration(&expiration, &env.block)?;
@@ -280,7 +254,7 @@ pub fn execute_add_liquidity(
     let lp_token_addr = LP_TOKEN.load(deps.storage)?;
 
     // validate funds
-    validate_input_amount(&info.funds, token1_amount, &token1.denom)?;
+    validate_input_amount(&info.funds, token1_amount + fee_amount, &token1.denom)?;
     validate_input_amount(&info.funds, max_token2, &token2.denom)?;
 
     let lp_token_supply = get_lp_token_supply(deps.as_ref(), &lp_token_addr)?;
@@ -359,38 +333,29 @@ pub fn execute_add_liquidity(
     /// Bonding Part
     
     // Do staking with double amount of token2
-    let mut bond_mges:Vec<CosmosMsg> = vec![];
-    let bond_amount = token2_amount * Uint128::from(2u128) * Uint128::from(THOUSAND - config.platform_fee - config.tx_fee) / Uint128::from(THOUSAND);
-    // transaction fee(0.3%) is already taken in pool contract, so just send 1% fee to the treasury
-    // send 1% fury and usdc to treasury
-    let fee_token1 = token1_amount * Uint128::from(config.platform_fee + config.tx_fee) / Uint128::from(THOUSAND);
-    let fee_token2 = token2_amount * Uint128::from(config.platform_fee + config.tx_fee) / Uint128::from(THOUSAND);
+    let mut bond_msgs:Vec<CosmosMsg> = vec![];
+    let bond_amount = token2_amount * Uint128::from(2u128);
 
-    bond_mges.push(util::transfer_token_message(token1.clone().denom.clone(), fee_token1, config.treasury_address.clone())?);
-    bond_mges.push(util::transfer_token_message(token2.clone().denom.clone(), fee_token2, config.treasury_address.clone())?);
+    // check if the fee is larger than required
+    if fee_amount < token1_amount * Uint128::from(config.platform_fee + config.tx_fee) * Uint128::from(2u128) / Uint128::from(THOUSAND) {
+        return Err(ContractError::InsufficientFee {  })
+    }
 
-    TOKEN1.update(deps.storage, |mut token1| -> Result<_, ContractError> {
-        token1.reserve -= fee_token1;
-        Ok(token1)
-    })?;
-    TOKEN2.update(deps.storage, |mut token2| -> Result<_, ContractError> {
-        token2.reserve -= fee_token2;
-        Ok(token2)
-    })?;
+    bond_msgs.push(util::transfer_token_message(token1.clone().denom.clone(), fee_amount, config.treasury_address.clone())?);
     
     // make bonding
     let bond_msg = BondingExecuteMsg::LpBond { address: info.sender.clone(), amount: bond_amount };
     
-    let bond_execute_msg:CosmosMsg = WasmMsg::Execute {
+    bond_msgs.push(WasmMsg::Execute {
         contract_addr: config.bonding_contract_address.into(),
         msg: to_binary(&bond_msg)?,
         funds: vec![],
-    }.into();
+    }.into());
 
     Ok(Response::new()
         .add_messages(transfer_msgs)
         .add_message(mint_msg)
-        .add_messages(bond_mges)
+        .add_messages(bond_msgs)
         .add_attributes(vec![
             attr("token1_amount", token1_amount),
             attr("token2_amount", token2_amount),
@@ -679,9 +644,12 @@ pub fn execute_swap(
     input_token_enum: TokenSelect,
     recipient: &Addr,
     min_token: Uint128,
+    fee_amount: Uint128,
     expiration: Option<Expiration>,
 ) -> Result<Response, ContractError> {
     check_expiration(&expiration, &_env.block)?;
+
+    let cfg = CONFIG.load(deps.storage)?;
 
     let input_token_item = match input_token_enum {
         TokenSelect::Token1 => TOKEN1,
@@ -695,7 +663,13 @@ pub fn execute_swap(
     let output_token = output_token_item.load(deps.storage)?;
 
     // validate input_amount if native input token
-    validate_input_amount(&info.funds, input_amount, &input_token.denom)?;
+    match input_token_enum.clone() {
+        TokenSelect::Token1 => validate_input_amount(&info.funds, input_amount + fee_amount, &input_token.denom)?,
+        TokenSelect::Token2 => validate_input_amount(&info.funds, fee_amount, &input_token.denom)?
+    }
+
+    
+    
 
     let token_bought = get_input_price(input_amount, input_token.reserve, output_token.reserve)?;
 
@@ -722,6 +696,26 @@ pub fn execute_swap(
         Denom::Cw20(addr) => get_cw20_transfer_to_msg(recipient, &addr, token_bought)?,
         Denom::Native(denom) => get_bank_transfer_to_msg(recipient, &denom, token_bought),
     });
+
+    //check fee is equal or larger than expected
+    match input_token_enum.clone() {
+        TokenSelect::Token1 => {
+            if fee_amount < input_amount * Uint128::from(cfg.platform_fee + cfg.tx_fee) / Uint128::from(THOUSAND) {
+                return Err(ContractError::InsufficientFee {  })
+            }
+            
+        }
+        TokenSelect::Token2 => {
+            if fee_amount < token_bought * Uint128::from(cfg.platform_fee + cfg.tx_fee) / Uint128::from(THOUSAND) {
+                return Err(ContractError::InsufficientFee {  })
+            }
+        }
+    }
+
+    // Create fee transfer message
+    transfer_msgs.push(
+        util::transfer_token_message(Denom::Native(cfg.usdc_denom), fee_amount, cfg.treasury_address.clone())?
+    );
 
     // Update token balances
     input_token_item.update(
@@ -754,106 +748,6 @@ pub fn execute_swap(
         ]))
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn execute_pass_through_swap(
-    deps: DepsMut,
-    info: MessageInfo,
-    _env: Env,
-    output_amm_address: Addr,
-    input_token_enum: TokenSelect,
-    input_token_amount: Uint128,
-    output_min_token: Uint128,
-    expiration: Option<Expiration>,
-) -> Result<Response, ContractError> {
-    check_expiration(&expiration, &_env.block)?;
-
-    let input_token_state = match input_token_enum {
-        TokenSelect::Token1 => TOKEN1,
-        TokenSelect::Token2 => TOKEN2,
-    };
-    let input_token = input_token_state.load(deps.storage)?;
-    let transfer_token_state = match input_token_enum {
-        TokenSelect::Token1 => TOKEN2,
-        TokenSelect::Token2 => TOKEN1,
-    };
-    let transfer_token = transfer_token_state.load(deps.storage)?;
-
-    validate_input_amount(&info.funds, input_token_amount, &input_token.denom)?;
-
-    let amount_to_transfer = get_input_price(
-        input_token_amount,
-        input_token.reserve,
-        transfer_token.reserve,
-    )?;
-
-    // Transfer tokens to contract
-    let mut msgs: Vec<CosmosMsg> = vec![];
-    if let Denom::Cw20(addr) = &input_token.denom {
-        msgs.push(get_cw20_transfer_from_msg(
-            &info.sender,
-            &_env.contract.address,
-            addr,
-            input_token_amount,
-        )?)
-    };
-
-    // Increase allowance of output contract if transfer token is cw20
-    if let Denom::Cw20(addr) = &transfer_token.denom {
-        msgs.push(get_cw20_increase_allowance_msg(
-            addr,
-            &output_amm_address,
-            amount_to_transfer,
-            Some(Expiration::AtHeight(_env.block.height + 1)),
-        )?)
-    };
-
-    let swap_msg = ExecuteMsg::SwapAndSendTo {
-        input_token: match input_token_enum {
-            TokenSelect::Token1 => TokenSelect::Token2,
-            TokenSelect::Token2 => TokenSelect::Token1,
-        },
-        input_amount: amount_to_transfer,
-        recipient: info.sender,
-        min_token: output_min_token,
-        expiration,
-    };
-
-    msgs.push(
-        WasmMsg::Execute {
-            contract_addr: output_amm_address.into(),
-            msg: to_binary(&swap_msg)?,
-            funds: match transfer_token.denom.clone() {
-                Denom::Cw20(_) => vec![],
-                Denom::Native(denom) => vec![Coin {
-                    denom,
-                    amount: amount_to_transfer,
-                }],
-            },
-        }
-        .into(),
-    );
-
-    input_token_state.update(deps.storage, |mut token| -> Result<_, ContractError> {
-        token.reserve = token
-            .reserve
-            .checked_add(input_token_amount)
-            .map_err(StdError::overflow)?;
-        Ok(token)
-    })?;
-
-    transfer_token_state.update(deps.storage, |mut token| -> Result<_, ContractError> {
-        token.reserve = token
-            .reserve
-            .checked_sub(amount_to_transfer)
-            .map_err(StdError::overflow)?;
-        Ok(token)
-    })?;
-
-    Ok(Response::new().add_messages(msgs).add_attributes(vec![
-        attr("input_token_amount", input_token_amount),
-        attr("native_transferred", amount_to_transfer),
-    ]))
-}
 
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {

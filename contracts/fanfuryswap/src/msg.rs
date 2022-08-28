@@ -50,6 +50,7 @@ pub enum ExecuteMsg {
         token1_amount: Uint128,
         min_liquidity: Uint128,
         max_token2: Uint128,
+        fee_amount: Uint128,
         expiration: Option<Expiration>,
     },
     RemoveLiquidity {
@@ -62,23 +63,10 @@ pub enum ExecuteMsg {
         input_token: TokenSelect,
         input_amount: Uint128,
         min_output: Uint128,
+        fee_amount: Uint128,
         expiration: Option<Expiration>,
     },
-    /// Chained swap converting A -> B and B -> C by leveraging two swap contracts
-    PassThroughSwap {
-        output_amm_address: Addr,
-        input_token: TokenSelect,
-        input_token_amount: Uint128,
-        output_min_token: Uint128,
-        expiration: Option<Expiration>,
-    },
-    SwapAndSendTo {
-        input_token: TokenSelect,
-        input_amount: Uint128,
-        recipient: Addr,
-        min_token: Uint128,
-        expiration: Option<Expiration>,
-    },
+
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
