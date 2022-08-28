@@ -10,7 +10,6 @@ pub struct InstantiateMsg {
     pub lp_token_code_id: u64,
     pub bonding_code_id: u64,
     pub owner: Addr,
-    pub bonding_contract_address: Addr,
     pub fury_token_address: Addr,
     pub treasury_address: Addr,
     pub usdc_denom: String,
