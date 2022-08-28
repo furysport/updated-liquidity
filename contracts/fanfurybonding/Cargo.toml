@@ -3,7 +3,7 @@ name = "fanfurybonding"
 version = "1.0.0"
 authors = ["arnold"]
 edition = "2018"
-description = "Stock Shorting"
+description = "Fanfury Bonding"
 
 
 exclude = [
