@@ -540,7 +540,7 @@ pub fn execute_remove_liquidity(
 
     let lp_token_burn_msg = get_burn_msg(&lp_token_addr, &info.sender, amount)?;
     messages.push(lp_token_burn_msg);
-
+    
     Ok(Response::new()
     .add_messages(messages)
     .add_attributes(vec![
