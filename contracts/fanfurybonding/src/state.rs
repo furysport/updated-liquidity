@@ -4,14 +4,17 @@ use serde::{Deserialize, Serialize};
 use cosmwasm_std::{Addr, Uint128};
 use cw_storage_plus::{Item, Map};
 use crate::msg::BondingRecord;
-use cw20::Denom;
+pub enum Denom {
+    Native(String),
+    Cw20(Addr),
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct Config {
     pub owner: Addr,
     pub pool_address: Addr,
     pub treasury_address: Addr,
-    pub fury_token_address: Addr,
+    pub fury_token_address: Denom,
     pub lock_days: u64,
     pub discount: u64,
     pub usdc_denom: String,

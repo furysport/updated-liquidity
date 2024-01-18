@@ -5,12 +5,16 @@ use serde::{Deserialize, Serialize};
 use cw20::{Cw20ReceiveMsg, Denom};
 use cosmwasm_std::{Uint128, Addr};
 
+pub enum Denom {
+    Native(String),
+    Cw20(Addr),
+}
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct InstantiateMsg {
     pub owner: Addr,
     pub pool_address: Addr,
     pub treasury_address: Addr,
-    pub fury_token_address: Addr,
+    pub fury_token_address: Denom,
     pub lock_days: u64,
     pub discount: u64,
     pub usdc_denom: String,
@@ -34,7 +38,7 @@ pub enum ExecuteMsg {
         tx_fee: u64,
         platform_fee: u64
     },
-    Bond {}, // For native bonding, 
+    Bond {}, // For native bonding,
     LpBond {
         address: Addr,
         amount: Uint128 // Only callable by pool
@@ -58,7 +62,7 @@ pub enum QueryMsg {
         start_after: Option<String>,
         limit: Option<u32>,
     }
-    
+
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, JsonSchema, Debug)]
@@ -67,7 +71,7 @@ pub struct ConfigResponse {
     pub owner: Addr,
     pub pool_address: Addr,
     pub treasury_address: Addr,
-    pub fury_token_address: Addr,
+    pub fury_token_address: Denom,
     pub lock_days: u64,
     pub discount: u64,
     pub usdc_denom: String,
