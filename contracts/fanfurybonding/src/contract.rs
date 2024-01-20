@@ -5,13 +5,21 @@ use cosmwasm_std::{
     WasmMsg, WasmQuery, QueryRequest, Order, Addr, CosmosMsg, QuerierWrapper, Storage
 };
 use cw2::{get_contract_version, set_contract_version};
-use cw20::{Cw20ExecuteMsg, Cw20ReceiveMsg, Denom};
+use crate::util::Denom;
 use cw_storage_plus::Bound;
 use cw_utils::{maybe_addr};
 use crate::error::ContractError;
 use crate::msg::{
     ConfigResponse, ExecuteMsg, InstantiateMsg, MigrateMsg, QueryMsg, BondStateResponse, BondingRecord, AllBondStateResponse
 };
+use reqwest;
+use serde::Deserialize;
+
+struct CoinGeckoPriceResponse {
+    #[serde(rename = "usd")]
+    usd_price: f64,
+    // Add other fields if needed
+}
 
 use crate::state::{
     Config, CONFIG, BONDING
@@ -93,16 +101,16 @@ pub fn check_owner(
 }
 
 pub fn execute_update_owner(
-    deps: DepsMut, 
+    deps: DepsMut,
     env: Env,
-    info: MessageInfo, 
+    info: MessageInfo,
     owner: Addr
 ) -> Result<Response, ContractError> {
-    
+
     check_owner(deps.storage, info.sender.clone())?;
 
     let mut cfg = CONFIG.load(deps.storage)?;
-    
+
     CONFIG.save(deps.storage, &cfg)?;
 
     return Ok(Response::new()
@@ -114,12 +122,12 @@ pub fn execute_update_owner(
 
 
 pub fn execute_update_enabled(
-    deps: DepsMut, 
+    deps: DepsMut,
     env: Env,
-    info: MessageInfo, 
+    info: MessageInfo,
     enabled: bool
 ) -> Result<Response, ContractError> {
-    
+
     check_owner(deps.storage, info.sender.clone())?;
 
     let mut cfg = CONFIG.load(deps.storage)?;
@@ -136,9 +144,9 @@ pub fn execute_update_enabled(
 
 
 pub fn execute_update_config(
-    deps: DepsMut, 
+    deps: DepsMut,
     env: Env,
-    info: MessageInfo, 
+    info: MessageInfo,
     lock_days: u64,
     discount: u64,
     tx_fee: u64,
@@ -147,7 +155,7 @@ pub fn execute_update_config(
     check_owner(deps.storage, info.sender.clone())?;
 
     let mut cfg = CONFIG.load(deps.storage)?;
-    
+
     cfg.lock_days = lock_days;
     cfg.discount = discount;
     cfg.tx_fee = tx_fee;
@@ -165,13 +173,13 @@ pub fn execute_update_config(
 
 
 pub fn execute_bond(
-    deps: DepsMut, 
+    deps: DepsMut,
     env: Env,
     info: MessageInfo,
 ) -> Result<Response, ContractError> {
-    
+
     check_enabled(deps.storage)?;
-    
+
 
     let cfg = CONFIG.load(deps.storage)?;
 
@@ -207,8 +215,8 @@ pub fn execute_bond(
         timestamp: env.block.time.seconds() + 86400 * cfg.lock_days
     });
     BONDING.save(deps.storage, info.sender.clone(), &list)?;
-    
-    
+
+
     return Ok(Response::new()
         .add_attributes(vec![
             attr("action", "bond"),
@@ -220,13 +228,13 @@ pub fn execute_bond(
 
 
 pub fn execute_lp_bond(
-    deps: DepsMut, 
+    deps: DepsMut,
     env: Env,
     info: MessageInfo,
     address: Addr,
     amount: Uint128
 ) -> Result<Response, ContractError> {
-    
+
     check_enabled(deps.storage)?;
 
     let cfg = CONFIG.load(deps.storage)?;
@@ -242,7 +250,7 @@ pub fn execute_lp_bond(
     if cfg.is_native_bonding {
         return Err(ContractError::NotAllowedBondingType {  })
     }
-    
+
     // On lp bonding, the platform fee and tx fee is already stolen from swap contract
     let receiving_amount = amount * Uint128::from(THOUSAND) / Uint128::from(THOUSAND - cfg.discount);
     let mut list:Vec<BondingRecord> = BONDING.load(deps.storage, info.sender.clone()).unwrap_or(vec![]);
@@ -251,7 +259,7 @@ pub fn execute_lp_bond(
         timestamp: env.block.time.seconds() + 86400 * cfg.lock_days
     });
     BONDING.save(deps.storage, info.sender.clone(), &list)?;
-    
+
     return Ok(Response::new()
         .add_attributes(vec![
             attr("action", "lp_bond"),
@@ -260,14 +268,14 @@ pub fn execute_lp_bond(
             attr("address", info.sender.clone()),
         ]));
 }
-        
+
 pub fn execute_unbond(
-    deps: DepsMut, 
+    deps: DepsMut,
     env: Env,
     info: MessageInfo,
     index: u64
 ) -> Result<Response, ContractError> {
-    
+
     check_enabled(deps.storage)?;
 
     let cfg = CONFIG.load(deps.storage)?;
@@ -279,7 +287,7 @@ pub fn execute_unbond(
     }
 
     let (_index, record) =list.iter().enumerate().find(|(i, c)| i == &(index as usize)).unwrap();
-    
+
     // let record = list.clone().get(index as usize).unwrap();
     if record.timestamp > env.block.time.seconds() {
         return Err(ContractError::StillInBonding {})
@@ -289,18 +297,35 @@ pub fn execute_unbond(
 
     //calculate tx fee
     let usdc_amount = util::get_amount_of_denom(balance, Denom::Native(cfg.usdc_denom.clone()))?;
-    let token1_price_response: Token2ForToken1PriceResponse = deps.querier.query(&QueryRequest::Wasm(WasmQuery::Smart {
-        contract_addr: cfg.pool_address.clone().into(),
-        msg: to_binary(&WasmswapQueryMsg::Token2ForToken1Price {
-            token2_amount: record.amount
-        })?,
-    }))?;
+    let token2_price_response: Uint128 = query_native_token_price(real_amount)?;
 
+// Example function for querying native token price
+    fn query_native_token_price(amount: Uint128) -> StdResult<Uint128> {
+    // Replace "YOUR_FANFURY_API_KEY" with your actual FanFury API key
+    let api_key = "YOUR_FANFURY_API_KEY";
+    let token_symbol = "FURY";  // Update with your native token symbol
+
+    // Build the URL for the CoinGecko API request
+    let url = format!("https://api.coingecko.com/api/v3/simple/price?ids={}&vs_currencies=usd", token_symbol);
+
+    // Make the HTTP request
+    let response = reqwest::blocking::get(&url)
+        .map_err(|_| ContractError::ApiRequestFailed)?;
+
+    // Parse the response JSON
+    let price_response: CoinGeckoPriceResponse = response.json().map_err(|_| ContractError::ApiParsingFailed)?;
+
+    // Calculate the uFury price based on the amount and the retrieved USD price
+    let usd_price = price_response.usd_price;
+    let fury_price = (usd_price * amount.u128() as f64) as u128;
+
+    Ok(Uint128::from(fury_price))
+    }
     if usdc_amount < token1_price_response.token1_amount * Uint128::from(cfg.platform_fee + cfg.tx_fee) / Uint128::from(THOUSAND) {
         return Err(ContractError::InsufficientFee { })
     }
 
-    let fury_balance = util::get_token_amount(deps.querier, Denom::Cw20(cfg.fury_token_address.clone()), env.contract.address.clone())?;
+    let fury_balance = util::get_native_balance(&cfg.usdc_denom, &env.contract.address)?;
     if fury_balance < record.amount {
         return Err(ContractError::InsufficientFury {})
     }
@@ -308,11 +333,11 @@ pub fn execute_unbond(
     let mut messages:Vec<CosmosMsg> = vec![];
     messages.push(util::transfer_token_message(Denom::Cw20(cfg.fury_token_address.clone()), record.amount, info.sender.clone())?);
     messages.push(util::transfer_token_message(Denom::Native(cfg.usdc_denom.clone()), usdc_amount, cfg.treasury_address.clone())?);
-    
+
     let mut list = BONDING.load(deps.storage, info.sender.clone())?;
     list.remove(index as usize);
     BONDING.save(deps.storage, info.sender.clone(), &list)?;
-    
+
     return Ok(Response::new()
         .add_attributes(vec![
             attr("action", "unbond"),
@@ -322,18 +347,18 @@ pub fn execute_unbond(
 }
 
 pub fn execute_withdraw(
-    deps: DepsMut, 
+    deps: DepsMut,
     env: Env,
     info: MessageInfo,
     amount: Uint128
 ) -> Result<Response, ContractError> {
-    
+
     check_owner(deps.storage, info.sender.clone())?;
 
     let cfg = CONFIG.load(deps.storage)?;
 
-    let fury_balance = util::get_token_amount(deps.querier, Denom::Cw20(cfg.fury_token_address.clone()), env.contract.address.clone())?;
-    if fury_balance < amount {
+    let fury_balance = util::get_native_balance(&cfg.usdc_denom, &env.contract.address)?;
+    if fury_balance < record.amount {
         return Err(ContractError::InsufficientFury {})
     }
 
@@ -349,15 +374,15 @@ pub fn execute_withdraw(
 }
 
 
-    
+
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
-        QueryMsg::Config {} 
+        QueryMsg::Config {}
             => to_binary(&query_config(deps)?),
-        QueryMsg::BondState {address} 
+        QueryMsg::BondState {address}
             => to_binary(&query_bond_state(deps, address)?),
-        QueryMsg::AllBondState {start_after, limit} 
+        QueryMsg::AllBondState {start_after, limit}
             => to_binary(&query_all_bond_state(deps, start_after, limit)?),
     }
 }
